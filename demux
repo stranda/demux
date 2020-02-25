@@ -1,0 +1,209 @@
+#!/bin/bash
+#splits out the barcodes that are perfect matches.  The nomatch.fastq file contains the
+# non-matches and more important the non-exact barcode matches.  Those have to be dredged
+# some other way (i've been using blast)
+#
+# uses gnu parallel to speed things up which is available (or easily installable) on any linux box.
+#
+#demux.awk is custom generated from the samples and barcodes by the R script: 'makeawk2.R'
+#
+# first  parameter is the name of a gzipped fastq file with lots of barcoded reads
+# second parameter is the name of a file that maps the ids to the barcodes
+# third parameter blank or 0 means no blast inexact matches 1 means do the blast inexact
+# fourth parameter is the number of cores to use for the blast analysis
+
+if [ -z "$1" ]
+   then
+   echo "You need to include some parameters:"
+   echo first  parameter is the name of a gzipped fastq file with lots of barcoded reads
+   echo second parameter is the name of a file that maps the ids to the barcodes
+   echo third parameter blank or 0 means no blast inexact matches 1 means do the blast inexact
+   echo fourth parameter is the number of cores to use for the blast analysis
+   exit 1
+fi
+
+if [ -z "$2" ]
+   then
+   echo "You need to include at least a barcode file along with the fastq"
+   echo first  parameter is the name of a gzipped fastq file with lots of barcoded reads
+   echo second parameter is the name of a file that maps the ids to the barcodes
+   echo third parameter blank or 0 means no blast inexact matches 1 means do the blast inexact
+   echo fourth parameter is the number of cores to use for the blast analysis
+   exit 1
+fi
+
+noblast=0
+if [ -z "$3" ]
+then
+    echo third param missing
+    noblast=1
+fi
+if [ "$3" == "0" ]
+then
+    echo third param equal to 0
+    noblast=1
+fi
+
+echo "No blast (parm 3)  set to: $noblast"
+
+
+date
+
+if [ -z "$4" ] 
+then
+    CORES=1
+else
+    CORES=$3
+fi
+
+echo "Num cores   set to: $CORES"
+
+EVALUE=2000   #Evalue cutoff (barcodes are small fragments, filter later for mismatch and orientation)
+MAXREADSPERIND=500000
+
+
+echo "creating the files specific to barcodes"
+Rscript setupIDs.R $2
+
+echo "splitting the barcodes that are perfect matches, destroying old versions"
+
+rm -fr fastq
+mkdir fastq
+
+gunzip -c $1 |sed 's/^@D/QYZ/'|tr '\n' '\f'|tr 'QZ' '\nD'|tr -d 'Y' | awk -f demux.awk
+rm -fr nomatch.fastq nomatch.fastq.gz
+mv -f fastq/nomatch.fastq .
+gzip nomatch.fastq
+
+echo Number of exactly matched reads: `cat fastq/*.fastq | grep "@" | wc -l`
+echo Number of barcodes with reads: `ls fastq/*.fastq|wc -l`
+echo Number of unnmatched reads: `gunzip -c nomatch.fastq.gz|grep "@" |wc -l`
+
+
+date
+
+if [ $noblast -gt 0 ]
+then
+    echo "Exiting before trying to perform inexact matches"
+    exit 0
+fi
+
+echo "setting up blast for non-exact matches"
+
+# bash script that implements a blast-based pipeine to parse out (de-multiplex) 
+# barcodes
+#
+# only apply it to the non-exact matches, don't waste time on this approach otherwise
+#
+
+dataroot=.
+BN=nomatch
+DBNAME=$dataroot/$BN
+#BARCODEFILE=$dataroot/barcodekey/barcodekeys.csv
+BARCODEFILE=$2  #second parameter on command line (complete path)
+BLASTDB=$dataroot/blast
+
+# make a sql database of the reads
+# this uses a lot of space but allows for random access to reads 
+#  which is needed in the blast step
+
+date
+echo "deleting old version of database"
+rm -fr $DBNAME
+rm -fr blast
+mkdir blast
+echo "creating database, might take awhile"
+
+#the first line deals with situations without the "@" the second, for records that start with K00
+gunzip -c nomatch.fastq.gz | tr "\n" "\t" | sed 's/\t$//'|sed '/^\s*$/d' |tr '@' '\n'|sed 1,2d|sed 's/^ //'|sed 's/\t$//g' > nm.tsv
+
+
+date
+
+cat nm.tsv| sqlite3 $DBNAME ".read import.sql"
+
+
+sqlite3 -csv $DBNAME ".import $BARCODEFILE barcodes"
+
+#
+# extract a fasta file from the database
+#
+date
+echo "extracting a fasta file from db"
+
+echo "select rowid,seq from reads;" | sqlite3 -batch -csv -list $DBNAME >$BN.csv 
+split -d -n l/$CORES   $BN.csv $BN 
+rm -f $BN.csv
+
+##
+## use the blast tool makeblastdb to make blast databases in parallel
+##
+##get number of reads 
+date
+
+
+#nreads=`echo "select max(read) from reads;" | sqlite $DBNAME`
+echo "about to run makeblastdb on $nreads reads split into  $CORES chunksb will take a while" 
+
+maxfile=`expr $CORES - 1`
+parallel --jobs $CORES --link  $dataroot/makebdb.sh :::  `seq -f "%02g" 0 $maxfile | sed "s/^/$BN/"` ::: `seq -f "%02g" 0 $maxfile | sed "s/^/$BN.fasta/"` ::: `seq -f "%02g" 0 $maxfile | sed "s|^|$dataroot/blast/$BN|"`
+
+##
+## make the hit db 
+##
+
+# creates a database of hits between barcodes and the raw reads
+# allows barcodes in reads to differ by 1 mismatch
+#
+
+
+
+
+echo "about to run blast "
+
+maxfile=`expr $CORES - 1`
+BLASTDB=$dataroot/blast/nomatch
+BDB=`seq -f "%02g" 0 $maxfile | sed "s|^|$dataroot/$BN|" | tr "\n" " "`
+
+NUMBARCODES=`sqlite3 $DBNAME "select max(rowid) from barcodes"`
+
+#NUMBARCODES=1
+
+echo $BDB|tr " " "\n" >alldb.txt
+blastdb_aliastool -dblist_file alldb.txt -out $dataroot/blast/${BN}_all -dbtype nucl -title $BN
+
+
+    
+sqlite3 $DBNAME "drop table if exists hits; create table hits(qid num,sid num, pct num, matchLength num, mismatch num,notsure num,qstart num ,qstop num, seqstart num ,seqstop num, eval num, bits num); CREATE INDEX readIndex ON hits(sid);"
+
+##check the numbers of barcodes (primitive 'checkpointing' possible here)
+
+for i in `seq 1 $NUMBARCODES`; do
+    echo "blasting barcode $i"
+    date
+    echo "select id, barcode from barcodes where rowid=$i;"|sqlite3 -batch -csv $DBNAME | sed 's/^/>/' | tr "," "\n" | tr a-z A-Z >oneseq.fasta
+    cat oneseq.fasta
+    sqlite3 $DBNAME "drop table if exists newhits; create table newhits(qid num,sid num, pct num, matchLength num, mismatch num,notsure num,qstart num ,qstop num, seqstart num ,seqstop num, eval num, bits num)"
+    blastn -task blastn -evalue $EVALUE -db $dataroot/blast/${BN}_all -max_target_seqs $MAXREADSPERIND -outfmt 10 -num_threads $CORES -query oneseq.fasta | sqlite3 -csv -batch $DBNAME ".import /dev/stdin newhits"
+    sqlite3 -batch $DBNAME "INSERT INTO hits SELECT * FROM newhits;" 
+done
+
+
+echo "extracting identified reads and appending to existing fastq files"
+
+sqlite3 $DBNAME -csv -batch "SELECT h.qid, r.id, r.seq, r.qual, h.seqstop FROM hits h LEFT JOIN reads r ON r.rowid=h.sid WHERE h.seqstart <20 AND h.seqstart<h.seqstop AND h.mismatch<2;" | tr "," "\t" | awk 'BEGIN{FS="\t"} {print "@" gensub(/"/,//,"g",$2) "\n" substr($3,$5) "\n+\n" substr($4,$5) >> ("fastq/" $1 ".fastq") } END{}' 
+
+
+date
+
+echo Total number of  matched reads \(exact + +1errors\): `cat fastq/*.fastq | grep "@" | wc -l`
+echo Number of barcodes with reads: `ls fastq/*.fastq|wc -l`
+
+rm $DBNAME
+rm -fr blast
+rm demux.awk
+rm oneseq.fasta
+rm -f nm.tsv
+rm -fr barcode.fasta
+
+

@@ -70,7 +70,7 @@ echo "splitting the barcodes that are perfect matches, destroying old versions"
 rm -fr fastq
 mkdir fastq
 
-gunzip -c $1 |sed 's/^@D/QYZ/'|tr '\n' '\f'|tr 'QZ' '\nD'|tr -d 'Y' | awk -f demux.awk
+gunzip -c $1 |sed 's/^@[ADM]/QYZ/'|tr '\n' '\f'|tr 'QZ' '\nD'|tr -d 'Y' | awk -f demux.awk
 rm -fr nomatch.fastq nomatch.fastq.gz
 mv -f fastq/nomatch.fastq .
 gzip nomatch.fastq

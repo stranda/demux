@@ -119,11 +119,17 @@ gunzip -c nomatch.fastq.gz | tr "\n" "\t" | sed 's/\t$//'|sed '/^\s*$/d' |tr '@'
 
 
 date
+echo "converted nomatch.fastq.gz to nm.tsv"
+head nm.tsv
 
 cat nm.tsv| sqlite3 $DBNAME ".read import.sql"
 
+sqlite3 $DBNAME "CREATE TABLE barcodes('index' TEXT, 'barcode' TEXT, 'id' TEXT);"
+tail -n +2 $BARCODEFILE > ${BARCODEFILE}.nh
+sqlite3 -csv $DBNAME ".import ${BARCODEFILE}.nh barcodes"
 
-sqlite3 -csv $DBNAME ".import $BARCODEFILE barcodes"
+echo "${BARCODEFILE}.nh imported into a sqlite db called $DBNAME as a table called 'barcodes'"
+
 
 #
 # extract a fasta file from the database
@@ -155,9 +161,6 @@ parallel --jobs $CORES --link  $dataroot/makebdb.sh :::  `seq -f "%02g" 0 $maxfi
 # creates a database of hits between barcodes and the raw reads
 # allows barcodes in reads to differ by 1 mismatch
 #
-
-
-
 
 echo "about to run blast "
 
@@ -199,11 +202,18 @@ date
 echo Total number of  matched reads \(exact + +1errors\): `cat fastq/*.fastq | grep "@" | wc -l`
 echo Number of barcodes with reads: `ls fastq/*.fastq|wc -l`
 
-rm $DBNAME
+#rm $DBNAME
 rm -fr blast
 rm demux.awk
 rm oneseq.fasta
 rm -f nm.tsv
 rm -fr barcode.fasta
+rm ${BARCODEFILE}.nh
+
+
+
+
+
+
 
 

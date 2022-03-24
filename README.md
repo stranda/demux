@@ -1,8 +1,8 @@
 # demux
-shell scripts and R support files to demultiplex barcodes in illumina data
+## shell scripts and R support files to demultiplex barcodes in illumina data
 
-VERSION: 0.0.1
-DATE: 1/20/2020
+VERSION: 0.0.2
+DATE: 3/23/2022
 
 This folder should include:
 
@@ -14,8 +14,7 @@ This folder should include:
   + barcode_test.csv (example barcode-id map)
   + test.fastq.gz (example reads)
 
-
-#This set of codes demultiplexes illumina reads with inline barcodes
+# This set of codes demultiplexes illumina reads with inline barcodes
 
 To run the analysis for exact matches you just need to run this command:
 
@@ -35,4 +34,4 @@ Then invoke this way:
 
 ./demux test.fastq.gz barcode_test.csv 1 1
 
-the third paramter "1" is a flag to conduct the more in depth demultiplexing and the fourth paramter "1" indicates that you want to use a single core.
+the third parameter "1" is a flag to conduct the more in depth demultiplexing and the fourth parameter "1" indicates that you want to use a single core.
